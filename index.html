@@ -53,8 +53,19 @@
     // Phone displacement is subtracted from the stationary world point.
     const x = -(p[0]*right[0]+p[1]*right[1])*scale;
     const y = (p[0]*up[0]+p[1]*up[1])*scale;
-    ball.style.left = `calc(50% + ${x}px)`;
-    ball.style.top = `calc(50% + ${y}px)`;
+    // Keep the entire ball inside the viewport, including its radius.
+    const maxX = Math.max(0, (document.documentElement.clientWidth - ball.offsetWidth) / 2);
+    const maxY = Math.max(0, (document.documentElement.clientHeight - ball.offsetHeight) / 2);
+    const clampedX = Math.max(-maxX, Math.min(maxX, x));
+    const clampedY = Math.max(-maxY, Math.min(maxY, y));
+    // Discard movement beyond the edge so reversing moves the ball immediately.
+    const det = right[0]*up[1] - right[1]*up[0];
+    if ((x !== clampedX || y !== clampedY) && Math.abs(det) > .05) {
+      const sx = -clampedX / scale, sy = clampedY / scale;
+      p = [(sx*up[1]-right[1]*sy)/det, (right[0]*sy-sx*up[0])/det];
+    }
+    ball.style.left = `calc(50% + ${clampedX}px)`;
+    ball.style.top = `calc(50% + ${clampedY}px)`;
     requestAnimationFrame(draw);
   }
   addEventListener('deviceorientation', e => {
