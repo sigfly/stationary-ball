@@ -27,7 +27,7 @@
   const rad = Math.PI / 180;
   let state = 'idle', last = 0, calibrationAt = 0, samples = [], quiet = 0;
   let p = [0, 0], v = [0, 0], bias = [0, 0], prev = [0, 0];
-  let orientation = null, initialYaw = null, fallbackGravity = null;
+  let orientation = null, initialYaw = null, initialScreenAngle = 0;
   let timer;
 
   const valid = a => a && [a.x, a.y, a.z].every(Number.isFinite);
@@ -42,11 +42,10 @@
     ];
   }
   function screenBasis() {
-    const r = basis();
-    const angle = (screen.orientation?.angle ?? window.orientation ?? 0) * rad;
-    const c = Math.cos(angle), s = Math.sin(angle);
-    return [[r[0][0]*c+r[0][1]*s, r[1][0]*c+r[1][1]*s],
-            [-r[0][0]*s+r[0][1]*c, -r[1][0]*s+r[1][1]*c]];
+    // The display axes are fixed at calibration, never tilted or rotated
+    // by later changes in the phone's attitude.
+    const c = Math.cos(initialScreenAngle), s = Math.sin(initialScreenAngle);
+    return [[c, s], [-s, c]];
   }
   function draw() {
     const [right, up] = screenBasis();
@@ -75,8 +74,9 @@
     clearTimeout(timer);
     state = 'calibrating'; calibrationAt = performance.now(); last = 0;
     p = [0, 0]; v = [0, 0]; bias = [0, 0]; prev = [0, 0];
-    samples = []; quiet = 0; fallbackGravity = null;
+    samples = []; quiet = 0;
     initialYaw = orientation?.alpha ?? null;
+    initialScreenAngle = (screen.orientation?.angle ?? window.orientation ?? 0) * rad;
     hint.textContent = 'Keep still for a moment…';
     timer = setTimeout(() => {
       if (state === 'calibrating') {
@@ -88,15 +88,14 @@
   function motion(e) {
     if (state !== 'calibrating' && state !== 'running') return;
     const now = performance.now();
-    let a = e.acceleration;
-    if (!valid(a)) {
-      if (!valid(e.accelerationIncludingGravity)) return;
-      const raw = [e.accelerationIncludingGravity.x,e.accelerationIncludingGravity.y,e.accelerationIncludingGravity.z];
-      if (!fallbackGravity) fallbackGravity = raw.slice();
-      if (state === 'calibrating') fallbackGravity = fallbackGravity.map((g,i) => .9*g+.1*raw[i]);
-      a = {x:raw[0]-fallbackGravity[0], y:raw[1]-fallbackGravity[1], z:raw[2]-fallbackGravity[2]};
-    }
-    if (initialYaw === null && orientation) initialYaw = orientation.alpha;
+    // Orientation is needed to distinguish horizontal from vertical motion.
+    if (!orientation) return;
+    if (initialYaw === null) initialYaw = orientation.alpha;
+    const a = valid(e.acceleration) ? e.acceleration : e.accelerationIncludingGravity;
+    if (!valid(a)) return;
+    // Rotate into a fixed ground frame BEFORE discarding the vertical axis.
+    // If only gravity-inclusive data is available, gravity is vertical in this
+    // frame and is discarded along with any vertical translation.
     const r = basis();
     const world = r.map(row => row[0]*a.x+row[1]*a.y+row[2]*a.z);
     if (state === 'calibrating') {
@@ -109,7 +108,11 @@
     const dt = (now-last)/1000; last = now;
     if (dt <= 0 || dt > .15) { v = [0,0]; prev = [0,0]; return; }
     let acc = world.map((a,i) => a-bias[i]);
-    const still = Math.hypot(...acc) < .12;
+    // Sensor fusion may leave small acceleration residuals during rotation.
+    // Filter those while retaining larger genuine horizontal accelerations.
+    const rr = e.rotationRate;
+    const angularSpeed = rr ? Math.hypot(rr.alpha || 0, rr.beta || 0, rr.gamma || 0) : 0;
+    const still = Math.hypot(...acc) < (angularSpeed > 12 ? .40 : .12);
     quiet = still ? quiet+dt : 0;
     if (still) acc = [0,0];
     // Trapezoidal integration with a zero-velocity correction during pauses.
