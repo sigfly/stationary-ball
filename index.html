@@ -25,8 +25,10 @@
   // Override using ?scale=6000 (larger values increase movement).
   const scale = Number(new URLSearchParams(location.search).get('scale')) || 6000;
   const rad = Math.PI / 180;
+  const accelerationDeadband = 0.25; // m/s²
+  const filterTime = 0.045; // seconds
   let state = 'idle', last = 0, calibrationAt = 0, samples = [], quiet = 0;
-  let p = [0, 0], v = [0, 0], bias = [0, 0], prev = [0, 0];
+  let p = [0, 0], v = [0, 0], bias = [0, 0], prev = [0, 0], filtered = [0, 0];
   let orientation = null, initialYaw = null, initialScreenAngle = 0;
   let timer;
 
@@ -73,7 +75,7 @@
   function calibrate() {
     clearTimeout(timer);
     state = 'calibrating'; calibrationAt = performance.now(); last = 0;
-    p = [0, 0]; v = [0, 0]; bias = [0, 0]; prev = [0, 0];
+    p = [0, 0]; v = [0, 0]; bias = [0, 0]; prev = [0, 0]; filtered = [0, 0];
     samples = []; quiet = 0;
     initialYaw = orientation?.alpha ?? null;
     initialScreenAngle = (screen.orientation?.angle ?? window.orientation ?? 0) * rad;
@@ -106,13 +108,16 @@
       return;
     }
     const dt = (now-last)/1000; last = now;
-    if (dt <= 0 || dt > .15) { v = [0,0]; prev = [0,0]; return; }
-    let acc = world.map((a,i) => a-bias[i]);
+    if (dt <= 0 || dt > .15) { v = [0,0]; prev = [0,0]; filtered = [0,0]; return; }
+    // Time-based low-pass filter smooths short sensor spikes and vibrations.
+    const mix = 1 - Math.exp(-dt / filterTime);
+    filtered = world.map((a,i) => filtered[i] + mix * (a - bias[i] - filtered[i]));
+    let acc = filtered.slice();
     // Sensor fusion may leave small acceleration residuals during rotation.
     // Filter those while retaining larger genuine horizontal accelerations.
     const rr = e.rotationRate;
     const angularSpeed = rr ? Math.hypot(rr.alpha || 0, rr.beta || 0, rr.gamma || 0) : 0;
-    const still = Math.hypot(...acc) < (angularSpeed > 12 ? .40 : .12);
+    const still = Math.hypot(...acc) < (angularSpeed > 12 ? .40 : accelerationDeadband);
     quiet = still ? quiet+dt : 0;
     if (still) acc = [0,0];
     // Trapezoidal integration with a zero-velocity correction during pauses.
